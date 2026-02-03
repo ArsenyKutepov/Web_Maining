@@ -1,0 +1,206 @@
+import scrapy
+import json
+import time
+from scrapy.crawler import CrawlerProcess
+import os
+
+
+class HHSpider(scrapy.Spider):
+    name = "hh_spider"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.all_vacancies = []
+
+    def start_requests(self):
+        search_queries = ["Python", "Программист", "Разработчик"]
+        for query in search_queries:
+            for page in range(2):  # 2 страницы на запрос
+                url = f"https://api.hh.ru/vacancies?text={query}&area=1&page={page}&per_page=20&only_with_salary=true"
+                yield scrapy.Request(
+                    url=url,
+                    callback=self.parse,
+                    meta={'query': query, 'page': page},
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                time.sleep(0.1)
+
+    def parse(self, response):
+        try:
+            data = json.loads(response.text)
+            vacancies = data.get('items', [])
+            print(f"✓ {response.meta['query']} - стр. {response.meta['page'] + 1}: {len(vacancies)} вакансий")
+
+            for vacancy in vacancies:
+                self.all_vacancies.append(vacancy)
+
+        except Exception as e:
+            print(f"✗ Ошибка: {e}")
+
+    def closed(self, reason):
+        """Сохраняем данные при закрытии spider"""
+        print(f"\n✅ Собрано вакансий: {len(self.all_vacancies)}")
+
+        # Сохраняем как обычный JSON массив
+        with open("programming_vacancies.json", "w", encoding="utf-8") as f:
+            json.dump(self.all_vacancies, f, ensure_ascii=False, indent=2)
+
+        print("💾 Данные сохранены в programming_vacancies.json")
+
+
+def run_parser():
+    """Запускает парсер и возвращает данные"""
+    process = CrawlerProcess(settings={
+        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'CONCURRENT_REQUESTS': 1,
+        'DOWNLOAD_DELAY': 0.5,
+        'LOG_LEVEL': 'INFO',
+        'ROBOTSTXT_OBEY': False,
+    })
+
+    process.crawl(HHSpider)
+    process.start()
+
+    # Читаем сохраненные данные
+    try:
+        with open("programming_vacancies.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            print(f"\n📊 Всего вакансий в файле: {len(data)}")
+            return data
+    except Exception as e:
+        print(f"\n⚠ Ошибка при чтении файла: {e}")
+        return []
+
+
+def run_parser_with_feed():
+    """Запускает парсер с использованием FEEDS (сохраняет в JSONL формате)"""
+    # Удаляем старый файл, если существует
+    if os.path.exists("programming_vacancies.json"):
+        os.remove("programming_vacancies.json")
+
+    process = CrawlerProcess(settings={
+        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'CONCURRENT_REQUESTS': 1,
+        'DOWNLOAD_DELAY': 0.5,
+        'LOG_LEVEL': 'INFO',
+        'ROBOTSTXT_OBEY': False,
+        'FEEDS': {
+            'programming_vacancies.jsonl': {  # Используем .jsonl для JSON Lines
+                'format': 'jsonlines',
+                'encoding': 'utf8',
+                'overwrite': True
+            }
+        }
+    })
+
+    # Создаем spider, который будет yield'ить элементы
+    class HHYieldSpider(scrapy.Spider):
+        name = "hh_yield_spider"
+
+        def start_requests(self):
+            search_queries = ["Python", "Программист"]
+            for query in search_queries:
+                for page in range(2):
+                    url = f"https://api.hh.ru/vacancies?text={query}&area=1&page={page}&per_page=20&only_with_salary=true"
+                    yield scrapy.Request(
+                        url=url,
+                        callback=self.parse,
+                        meta={'query': query, 'page': page},
+                        headers={'User-Agent': 'Mozilla/5.0'}
+                    )
+                    time.sleep(0.1)
+
+        def parse(self, response):
+            try:
+                data = json.loads(response.text)
+                vacancies = data.get('items', [])
+                print(f"✓ {response.meta['query']} - стр. {response.meta['page'] + 1}: {len(vacancies)} вакансий")
+
+                for vacancy in vacancies:
+                    yield vacancy
+
+            except Exception as e:
+                print(f"✗ Ошибка: {e}")
+
+    process.crawl(HHYieldSpider)
+    process.start()
+
+    # Конвертируем JSONL в обычный JSON
+    return convert_jsonl_to_json()
+
+
+def convert_jsonl_to_json():
+    """Конвертирует JSONL файл в обычный JSON массив"""
+    jsonl_file = "programming_vacancies.jsonl"
+    json_file = "programming_vacancies.json"
+
+    if not os.path.exists(jsonl_file):
+        print(f"⚠ Файл {jsonl_file} не найден")
+        return []
+
+    data = []
+    try:
+        with open(jsonl_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():  # Пропускаем пустые строки
+                    data.append(json.loads(line))
+
+        # Сохраняем как обычный JSON
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        print(f"\n✅ Конвертировано {len(data)} записей из JSONL в JSON")
+
+        # Удаляем JSONL файл
+        os.remove(jsonl_file)
+
+        return data
+
+    except Exception as e:
+        print(f"❌ Ошибка при конвертации JSONL: {e}")
+        return []
+
+
+def parse_jsonl_file(filename="programming_vacancies.jsonl"):
+    """Парсит JSONL файл и возвращает список данных"""
+    data = []
+    if not os.path.exists(filename):
+        return data
+
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    data.append(json.loads(line))
+        print(f"📊 Прочитано {len(data)} записей из {filename}")
+    except Exception as e:
+        print(f"❌ Ошибка при чтении {filename}: {e}")
+
+    return data
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("SCRAPY ПАРСЕР ДЛЯ HH.RU")
+    print("=" * 60)
+
+    print("\n1️⃣ Вариант 1: Простой парсер (рекомендуется)")
+    vacancies1 = run_parser()
+
+    print("\n2️⃣ Вариант 2: С использованием FEEDS (JSONL)")
+    vacancies2 = run_parser_with_feed()
+
+    print("\n" + "=" * 60)
+    print("РЕЗУЛЬТАТЫ:")
+    print("=" * 60)
+    print(f"Вариант 1: {len(vacancies1)} вакансий")
+    print(f"Вариант 2: {len(vacancies2)} вакансий")
+
+    # Сохраняем общий результат
+    all_vacancies = vacancies1 if len(vacancies1) > len(vacancies2) else vacancies2
+
+    if all_vacancies:
+        with open("hh_vacancies_final.json", "w", encoding="utf-8") as f:
+            json.dump(all_vacancies, f, ensure_ascii=False, indent=2)
+        print(f"\n💾 Финальные данные сохранены в hh_vacancies_final.json")
+        print(f"📊 Всего уникальных вакансий: {len(all_vacancies)}")
