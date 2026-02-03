@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""
+Главный файл для запуска полного анализа через Scrapy.
+"""
+
+import os
+import sys
+import json
+import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import datetime
+
+
+def check_dependencies():
+    """Проверяет наличие необходимых библиотек."""
+    required = ['scrapy', 'pandas', 'matplotlib', 'psutil']
+    missing = []
+    
+    for lib in required:
+        try:
+            __import__(lib)
+        except ImportError:
+            missing.append(lib)
+    
+    if missing:
+        print(f"❌ Отсутствуют библиотеки: {', '.join(missing)}")
+        print("Установите их командой: pip install scrapy pandas matplotlib psutil")
+        return False
+    return True
+
+
+def create_directories():
+    """Создает необходимые директории."""
+    directories = [
+        'graphs/load_testing',
+        'graphs/exploratory_analysis',
+        'graphs/technologies',
+        'data'
+    ]
+    
+    for directory in directories:
+        os.makedirs(directory, exist_ok=True)
+    
+    print("✅ Директории созданы")
+
+
+def extract_technologies(vacancy_name, vacancy_snippet):
+    """Извлекает технологии из вакансии."""
+    tech_keywords = {
+        'Python': ['python'],
+        'Django и др.': ['django', 'flask', 'fastapi'],
+        'JavaScript': ['javascript', 'js', 'node.js', 'nodejs'],
+        'React и др.': ['react', 'vue', 'angular'],
+        'Java': ['java', 'hibernate'],
+        'Spring': ['spring'],
+        'C++': ['c++', 'cpp'],
+        'C# & .NET': ['c#', 'csharp', '.net'],
+        'PHP': ['php', 'laravel', 'symfony'],
+        'Go': ['go', 'golang'],
+        'Ruby': ['ruby', 'rails'],
+        'SQL': ['sql', 'mysql', 'postgresql', 'oracle'],
+        'NoSQL': ['mongodb', 'redis', 'cassandra'],
+        'Docker': ['docker', 'container'],
+        'Kubernetes': ['kubernetes', 'k8s'],
+        'AWS': ['aws', 'amazon web services'],
+        'Azure': ['azure'],
+        'Git': ['git', 'github', 'gitlab'],
+        'Linux': ['linux', 'unix']
+    }
+    
+    found_tech = set()
+    text = f"{vacancy_name} {vacancy_snippet}".lower()
+    
+    for tech, keywords in tech_keywords.items():
+        for keyword in keywords:
+            if keyword in text:
+                found_tech.add(tech)
+                break
+    
+    return list(found_tech)
+
+
+def analyze_vacancies(filename="programming_vacancies.json"):
+    """Анализирует собранные вакансии."""
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            vacancies = json.load(f)
+    except Exception as e:
+        print(f"❌ Ошибка при чтении файла {filename}: {e}")
+        return pd.DataFrame(), pd.Series()
+    
+    print(f"📊 Всего вакансий для анализа: {len(vacancies)}")
+    
+    df_data = []
+    all_technologies = []
+    
+    for vac in vacancies:
+        # Зарплата
+        salary = vac.get('salary')
+        avg_salary = None
+        if salary:
+            salary_from = salary.get('from')
+            salary_to = salary.get('to')
+            if salary_from and salary_to:
+                avg_salary = (salary_from + salary_to) / 2
+            elif salary_from:
+                avg_salary = salary_from
+            elif salary_to:
+                avg_salary = salary_to
+        
+        # Опыт
+        experience = vac.get('experience', {}).get('name', 'Не указан')
+        
+        # Занятость
+        employment = vac.get('employment', {}).get('name', 'Не указана')
+        
+        # Технологии
+        snippet = vac.get('snippet', {})
+        requirement = snippet.get('requirement', '') or ''
+        responsibility = snippet.get('responsibility', '') or ''
+        vacancy_snippet = f"{requirement} {responsibility}"
+        
+        technologies = extract_technologies(vac.get('name', ''), vacancy_snippet)
+        all_technologies.extend(technologies)
+        
+        df_data.append({
+            'id': vac.get('id', ''),
+            'name': vac.get('name', ''),
+            'salary_avg': avg_salary,
+            'experience': experience,
+            'employment': employment,
+            'area': vac.get('area', {}).get('name', ''),
+            'published_at': vac.get('published_at', ''),
+            'technologies': technologies
+        })
+    
+    df = pd.DataFrame(df_data)
+    
+    if all_technologies:
+        tech_series = pd.Series(all_technologies)
+        tech_counts = tech_series.value_counts()
+    else:
+        tech_counts = pd.Series()
+    
+    return df, tech_counts
+
+
+def create_graphs(df, tech_counts):
+    """Создает графики на основе анализа."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # 1. Распределение зарплат
+    if not df.empty and 'salary_avg' in df.columns:
+        plt.figure(figsize=(12, 8))
+        salaries = df['salary_avg'].dropna()
+        if len(salaries) > 0:
+            plt.hist(salaries, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+            plt.title('Распределение зарплат программистов')
+            plt.xlabel('Зарплата (руб)')
+            plt.ylabel('Количество вакансий')
+            plt.grid(True, alpha=0.3)
+            plt.savefig(f'graphs/exploratory_analysis/salary_distribution_{timestamp}.png', 
+                       dpi=300, bbox_inches='tight')
+            plt.close()
+            print("✅ График: Распределение зарплат")
+    
+    # 2. Топ технологий
+    if len(tech_counts) > 0:
+        plt.figure(figsize=(14, 8))
+        top_tech = tech_counts.head(15)
+        colors = plt.cm.viridis(range(len(top_tech)))
+        bars = plt.bar(range(len(top_tech)), top_tech.values, color=colors)
+        plt.xticks(range(len(top_tech)), top_tech.index, rotation=45, ha='right')
+        plt.title('Топ-15 востребованных технологий')
+        plt.xlabel('Технологии')
+        plt.ylabel('Количество упоминаний')
+        plt.grid(True, alpha=0.3)
+        
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height + 1,
+                    f'{int(height)}', ha='center', va='bottom')
+        
+        plt.tight_layout()
+        plt.savefig(f'graphs/technologies/top_technologies_{timestamp}.png', 
+                   dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✅ График: Топ технологий")
+    
+    # 3. Зарплата по опыту
+    if not df.empty and 'salary_avg' in df.columns and 'experience' in df.columns:
+        plt.figure(figsize=(12, 8))
+        exp_salary = df.groupby('experience')['salary_avg'].mean().dropna()
+        if len(exp_salary) > 0:
+            colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99']
+            bars = exp_salary.plot(kind='bar', color=colors)
+            plt.title('Средняя зарплата по опыту работы')
+            plt.xlabel('Опыт работы')
+            plt.ylabel('Средняя зарплата (руб)')
+            plt.xticks(rotation=45)
+            plt.grid(True, alpha=0.3)
+            
+            for i, v in enumerate(exp_salary):
+                plt.text(i, v + 5000, f'{v:.0f}', ha='center', va='bottom')
+            
+            plt.savefig(f'graphs/exploratory_analysis/salary_by_experience_{timestamp}.png',
+                       dpi=300, bbox_inches='tight')
+            plt.close()
+            print("✅ График: Зарплата по опыту")
+
+
+def print_statistics(df, tech_counts):
+    """Выводит статистику анализа."""
+    print("\n" + "="*60)
+    print("СТАТИСТИКА АНАЛИЗА")
+    print("="*60)
+    
+    if df.empty:
+        print("❌ Нет данных для анализа")
+        return
+    
+    print(f"\n📈 ОБЩАЯ СТАТИСТИКА:")
+    print(f"   Всего вакансий: {len(df)}")
+    
+    if 'salary_avg' in df.columns:
+        salary_data = df['salary_avg'].dropna()
+        if len(salary_data) > 0:
+            print(f"   Вакансий с зарплатой: {len(salary_data)}")
+            print(f"   Средняя зарплата: {salary_data.mean():,.0f} руб.")
+            print(f"   Медианная зарплата: {salary_data.median():,.0f} руб.")
+            print(f"   Максимальная: {salary_data.max():,.0f} руб.")
+            print(f"   Минимальная: {salary_data.min():,.0f} руб.")
+    
+    print(f"\n📊 РАСПРЕДЕЛЕНИЕ ПО ОПЫТУ:")
+    if 'experience' in df.columns:
+        exp_counts = df['experience'].value_counts()
+        for exp, count in exp_counts.items():
+            percentage = (count / len(df)) * 100
+            print(f"   {exp:<20} {count:>4} ({percentage:.1f}%)")
+    
+    print(f"\n👥 ТИПЫ ЗАНЯТОСТИ:")
+    if 'employment' in df.columns:
+        emp_counts = df['employment'].value_counts()
+        for emp, count in emp_counts.items():
+            percentage = (count / len(df)) * 100
+            print(f"   {emp:<20} {count:>4} ({percentage:.1f}%)")
+    
+    if len(tech_counts) > 0:
+        print(f"\n🏆 ТОП-10 ТЕХНОЛОГИЙ:")
+        for i, (tech, count) in enumerate(tech_counts.head(10).items(), 1):
+            percentage = (count / len(df)) * 100 if len(df) > 0 else 0
+            print(f"   {i:2d}. {tech:<20} {count:>4} ({percentage:.1f}%)")
+
+
+def save_results(df, tech_counts):
+    """Сохраняет результаты анализа."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Сохраняем DataFrame
+    if not df.empty:
+        csv_file = f"data/vacancies_analysis_{timestamp}.csv"
+        df.to_csv(csv_file, index=False, encoding='utf-8-sig')
+        print(f"💾 Данные вакансий сохранены в: {csv_file}")
+    
+    # Сохраняем статистику технологий
+    if len(tech_counts) > 0:
+        tech_df = tech_counts.reset_index()
+        tech_df.columns = ['Technology', 'Count']
+        tech_df['Percentage'] = (tech_df['Count'] / len(df)) * 100 if len(df) > 0 else 0
+        tech_csv = f"data/technologies_stats_{timestamp}.csv"
+        tech_df.to_csv(tech_csv, index=False, encoding='utf-8-sig')
+        print(f"💾 Статистика технологий в: {tech_csv}")
+
+
+def main():
+    """Основная функция запуска."""
+    print("="*70)
+    print("ПОЛНЫЙ АНАЛИЗ HH.RU С ИСПОЛЬЗОВАНИЕМ SCRAPY")
+    print("="*70)
+    
+    # Проверка зависимостей
+    if not check_dependencies():
+        sys.exit(1)
+    
+    # Создание директорий
+    create_directories()
+    
+    # Запуск парсера
+    print("\n🚀 ЗАПУСК ПАРСЕРА...")
+    try:
+        from hh_scrapy_parser import run_parser
+        vacancies = run_parser()
+    except ImportError:
+        print("⚠ Парсер не найден. Используем существующий файл данных...")
+        if os.path.exists("programming_vacancies.json"):
+            with open("programming_vacancies.json", "r", encoding="utf-8") as f:
+                vacancies = json.load(f)
+        else:
+            print("❌ Файл данных не найден!")
+            sys.exit(1)
+    
+    if not vacancies:
+        print("❌ Не удалось собрать данные!")
+        sys.exit(1)
+    
+    print(f"✅ Собрано вакансий: {len(vacancies)}")
+    
+    # Анализ данных
+    print("\n📊 АНАЛИЗ ДАННЫХ...")
+    df, tech_counts = analyze_vacancies()
+    
+    # Создание графиков
+    print("\n🎨 СОЗДАНИЕ ГРАФИКОВ...")
+    create_graphs(df, tech_counts)
+    
+    # Вывод статистики
+    print_statistics(df, tech_counts)
+    
+    # Сохранение результатов
+    print("\n💾 СОХРАНЕНИЕ РЕЗУЛЬТАТОВ...")
+    save_results(df, tech_counts)
+    
+    print("\n" + "="*70)
+    print("✅ АНАЛИЗ УСПЕШНО ЗАВЕРШЕН!")
+    print("="*70)
+    
+    # Показываем итоги
+    print(f"\n📁 Результаты сохранены в:")
+    print(f"   - Папка 'graphs/' - графики анализа")
+    print(f"   - Папка 'data/' - таблицы с данными")
+    print(f"   - Файл 'programming_vacancies.json' - исходные данные")
+
+
+if __name__ == "__main__":
+    main()
